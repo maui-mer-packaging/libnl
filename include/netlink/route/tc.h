@@ -23,6 +23,16 @@
 extern "C" {
 #endif
 
+enum rtnl_tc_type {
+	RTNL_TC_TYPE_QDISC,
+	RTNL_TC_TYPE_CLASS,
+	RTNL_TC_TYPE_CLS,
+	RTNL_TC_TYPE_ACT,
+	__RTNL_TC_TYPE_MAX,
+};
+
+#define RTNL_TC_TYPE_MAX (__RTNL_TC_TYPE_MAX - 1)
+
 /**
  * Compute tc handle based on major and minor parts
  * @ingroup tc

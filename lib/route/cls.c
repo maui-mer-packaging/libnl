@@ -6,7 +6,7 @@
  *	License as published by the Free Software Foundation version 2.1
  *	of the License.
  *
- * Copyright (c) 2003-2011 Thomas Graf <tgraf@suug.ch>
+ * Copyright (c) 2003-2013 Thomas Graf <tgraf@suug.ch>
  */
 
 /**
@@ -15,11 +15,11 @@
  * @{
  */
 
-#include <netlink-local.h>
-#include <netlink-tc.h>
+#include <netlink-private/netlink.h>
+#include <netlink-private/tc.h>
 #include <netlink/netlink.h>
 #include <netlink/utils.h>
-#include <netlink/route/tc-api.h>
+#include <netlink-private/route/tc-api.h>
 #include <netlink/route/classifier.h>
 #include <netlink/route/link.h>
 
@@ -37,7 +37,7 @@ static int cls_build(struct rtnl_cls *cls, int type, int flags,
 {
 	int err, prio, proto;
 	struct tcmsg *tchdr;
-	int required = TCA_ATTR_IFINDEX;
+	uint32_t required = TCA_ATTR_IFINDEX;
 
 	if ((cls->ce_mask & required) != required) {
 		APPBUG("ifindex must be specified");
@@ -251,7 +251,7 @@ int rtnl_cls_change(struct nl_sock *sk, struct rtnl_cls *cls, int flags)
 int rtnl_cls_build_delete_request(struct rtnl_cls *cls, int flags,
 				  struct nl_msg **result)
 {
-	int required = CLS_ATTR_PRIO;
+	uint32_t required = CLS_ATTR_PRIO;
 
 	if ((cls->ce_mask & required) != required) {
 		APPBUG("prio must be specified");
@@ -368,7 +368,11 @@ static int cls_msg_parser(struct nl_cache_ops *ops, struct sockaddr_nl *who,
 		goto errout;
 
 	cls->c_prio = TC_H_MAJ(cls->c_info) >> 16;
+	if (cls->c_prio)
+		cls->ce_mask |= CLS_ATTR_PRIO;
 	cls->c_protocol = ntohs(TC_H_MIN(cls->c_info));
+	if (cls->c_protocol)
+		cls->ce_mask |= CLS_ATTR_PROTOCOL;
 
 	err = pp->pp_cb(OBJ_CAST(cls), pp);
 errout:
@@ -407,6 +411,7 @@ static struct nl_cache_ops rtnl_cls_ops = {
 					END_OF_MSGTYPES_LIST,
 				  },
 	.co_protocol		= NETLINK_ROUTE,
+	.co_groups		= tc_groups,
 	.co_request_update	= cls_request_update,
 	.co_msg_parser		= cls_msg_parser,
 	.co_obj_ops		= &cls_obj_ops,

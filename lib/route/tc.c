@@ -15,14 +15,14 @@
  * @{
  */
 
-#include <netlink-local.h>
-#include <netlink-tc.h>
+#include <netlink-private/netlink.h>
+#include <netlink-private/tc.h>
 #include <netlink/netlink.h>
 #include <netlink/utils.h>
 #include <netlink/route/rtnl.h>
 #include <netlink/route/link.h>
 #include <netlink/route/tc.h>
-#include <netlink/route/tc-api.h>
+#include <netlink-private/route/tc-api.h>
 
 /** @cond SKIP */
 
@@ -214,17 +214,20 @@ int rtnl_tc_msg_build(struct rtnl_tc *tc, int type, int flags,
 	    NLA_PUT_STRING(msg, TCA_KIND, tc->tc_kind);
 
 	ops = rtnl_tc_get_ops(tc);
-	if (ops && ops->to_msg_fill) {
+	if (ops && (ops->to_msg_fill || ops->to_msg_fill_raw)) {
 		struct nlattr *opts;
 		void *data = rtnl_tc_data(tc);
 
-		if (!(opts = nla_nest_start(msg, TCA_OPTIONS)))
-			goto nla_put_failure;
+		if (ops->to_msg_fill) {
+			if (!(opts = nla_nest_start(msg, TCA_OPTIONS)))
+				goto nla_put_failure;
 
-		if ((err = ops->to_msg_fill(tc, data, msg)) < 0)
-			goto nla_put_failure;
+			if ((err = ops->to_msg_fill(tc, data, msg)) < 0)
+				goto nla_put_failure;
 
-		nla_nest_end(msg, opts);
+			nla_nest_end(msg, opts);
+		} else if ((err = ops->to_msg_fill_raw(tc, data, msg)) < 0)
+			goto nla_put_failure;
 	}
 
 	*result = msg;
@@ -297,6 +300,8 @@ void rtnl_tc_set_link(struct rtnl_tc *tc, struct rtnl_link *link)
 
 	if (!link)
 		return;
+	if (!link->l_index)
+		BUG();
 
 	nl_object_get(OBJ_CAST(link));
 	tc->tc_link = link;
@@ -710,7 +715,7 @@ int rtnl_tc_build_rate_table(struct rtnl_tc *tc, struct rtnl_ratespec *spec,
 
 	for (i = 0; i < RTNL_TC_RTABLE_SIZE; i++) {
 		size = adjust_size((i + 1) << cell_log, spec->rs_mpu, linktype);
-		dst[i] = rtnl_tc_calc_txtime(size, spec->rs_rate);
+		dst[i] = nl_us2ticks(rtnl_tc_calc_txtime(size, spec->rs_rate));
 	}
 
 	spec->rs_cell_align = -1;
@@ -822,7 +827,7 @@ void rtnl_tc_dump_line(struct nl_object *obj, struct nl_dump_params *p)
 
 	nl_dump(p, "%s ", tc->tc_kind);
 
-	if ((link_cache = nl_cache_mngt_require("route/link"))) {
+	if ((link_cache = nl_cache_mngt_require_safe("route/link"))) {
 		nl_dump(p, "dev %s ",
 			rtnl_link_i2name(link_cache, tc->tc_ifindex,
 					 buf, sizeof(buf)));
@@ -837,6 +842,9 @@ void rtnl_tc_dump_line(struct nl_object *obj, struct nl_dump_params *p)
 
 	tc_dump(tc, NL_DUMP_LINE, p);
 	nl_dump(p, "\n");
+
+	if (link_cache)
+		nl_cache_put(link_cache);
 }
 
 void rtnl_tc_dump_details(struct nl_object *obj, struct nl_dump_params *p)
@@ -1047,6 +1055,12 @@ void *rtnl_tc_data_check(struct rtnl_tc *tc, struct rtnl_tc_ops *ops)
 
 	return rtnl_tc_data(tc);
 }
+
+struct nl_af_group tc_groups[] = {
+	{ AF_UNSPEC,	RTNLGRP_TC },
+	{ END_OF_GROUP_LIST },
+};
+
 
 void rtnl_tc_type_register(struct rtnl_tc_type_ops *ops)
 {

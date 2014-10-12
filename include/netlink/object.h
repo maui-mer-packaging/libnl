@@ -31,6 +31,8 @@ extern int			nl_object_alloc_name(const char *,
 						     struct nl_object **);
 extern void			nl_object_free(struct nl_object *);
 extern struct nl_object *	nl_object_clone(struct nl_object *obj);
+extern int			nl_object_update(struct nl_object *dst,
+						 struct nl_object *src);
 extern void			nl_object_get(struct nl_object *);
 extern void			nl_object_put(struct nl_object *);
 extern int			nl_object_shared(struct nl_object *);
@@ -48,6 +50,8 @@ extern char *			nl_object_attrs2str(struct nl_object *,
 						    size_t);
 extern char *			nl_object_attr_list(struct nl_object *,
 						    char *, size_t);
+extern void			nl_object_keygen(struct nl_object *,
+						 uint32_t *, uint32_t);
 
 /* Marks */
 extern void			nl_object_mark(struct nl_object *);
@@ -60,6 +64,7 @@ extern struct nl_cache *	nl_object_get_cache(struct nl_object *);
 extern const char *		nl_object_get_type(const struct nl_object *);
 extern int			nl_object_get_msgtype(const struct nl_object *);
 struct nl_object_ops *		nl_object_get_ops(const struct nl_object *);
+uint32_t			nl_object_get_id_attrs(struct nl_object *obj);
 
 
 static inline void *		nl_object_priv(struct nl_object *obj)

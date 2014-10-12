@@ -6,7 +6,7 @@
  *	License as published by the Free Software Foundation version 2.1
  *	of the License.
  *
- * Copyright (c) 2008-2010 Thomas Graf <tgraf@suug.ch>
+ * Copyright (c) 2008-2013 Thomas Graf <tgraf@suug.ch>
  */
 
 /**
@@ -16,8 +16,8 @@
  * @{
  */
 
-#include <netlink-local.h>
-#include <netlink-tc.h>
+#include <netlink-private/netlink.h>
+#include <netlink-private/tc.h>
 #include <netlink/netlink.h>
 #include <netlink/route/classifier.h>
 #include <netlink/route/cls/ematch.h>
@@ -282,9 +282,10 @@ void rtnl_ematch_tree_free(struct rtnl_ematch_tree *tree)
 		return;
 
 	free_ematch_list(&tree->et_list);
-	free(tree);
 
 	NL_DBG(2, "Freed ematch tree %p\n", tree);
+
+	free(tree);
 }
 
 /**
@@ -653,9 +654,7 @@ int rtnl_ematch_parse_expr(const char *expr, char **errp,
 		goto errout;
 	}
 
-	if (scanner)
-		ematch_lex_destroy(scanner);
-
+	ematch_lex_destroy(scanner);
 	*result = tree;
 
 	return 0;
@@ -693,7 +692,7 @@ static const char *operand_txt[] = {
 char *rtnl_ematch_opnd2txt(uint8_t opnd, char *buf, size_t len)
 {
 	snprintf(buf, len, "%s",
-		opnd <= ARRAY_SIZE(operand_txt) ? operand_txt[opnd] : "?");
+		opnd < ARRAY_SIZE(operand_txt) ? operand_txt[opnd] : "?");
 
 	return buf;
 }

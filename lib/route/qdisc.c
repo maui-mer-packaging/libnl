@@ -15,12 +15,12 @@
  * @{
  */
 
-#include <netlink-local.h>
-#include <netlink-tc.h>
+#include <netlink-private/netlink.h>
+#include <netlink-private/tc.h>
 #include <netlink/netlink.h>
 #include <netlink/utils.h>
 #include <netlink/route/link.h>
-#include <netlink/route/tc-api.h>
+#include <netlink-private/route/tc-api.h>
 #include <netlink/route/qdisc.h>
 #include <netlink/route/class.h>
 #include <netlink/route/classifier.h>
@@ -275,7 +275,7 @@ int rtnl_qdisc_build_delete_request(struct rtnl_qdisc *qdisc,
 {
 	struct nl_msg *msg;
 	struct tcmsg tchdr;
-	int required = TCA_ATTR_IFINDEX | TCA_ATTR_PARENT;
+	uint32_t required = TCA_ATTR_IFINDEX | TCA_ATTR_PARENT;
 
 	if ((qdisc->ce_mask & required) != required) {
 		APPBUG("ifindex and parent must be specified");
@@ -541,6 +541,7 @@ static struct nl_cache_ops rtnl_qdisc_ops = {
 					END_OF_MSGTYPES_LIST,
 				  },
 	.co_protocol		= NETLINK_ROUTE,
+	.co_groups		= tc_groups,
 	.co_request_update	= qdisc_request_update,
 	.co_msg_parser		= qdisc_msg_parser,
 	.co_obj_ops		= &qdisc_obj_ops,

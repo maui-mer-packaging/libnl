@@ -10,12 +10,24 @@
  */
 
 /**
- * @ingroup cache
- * @defgroup object Object
+ * @ingroup core_types
+ * @defgroup object Object (Cacheable)
+ *
+ * Generic object data type, for inheritance purposes to implement cacheable
+ * data types.
+ *
+ * Related sections in the development guide:
+ *
  * @{
+ *
+ * Header
+ * ------
+ * ~~~~{.c}
+ * #include <netlink/object.h>
+ * ~~~~
  */
 
-#include <netlink-local.h>
+#include <netlink-private/netlink.h>
 #include <netlink/netlink.h>
 #include <netlink/cache.h>
 #include <netlink/object.h>
@@ -73,11 +85,13 @@ int nl_object_alloc_name(const char *kind, struct nl_object **result)
 {
 	struct nl_cache_ops *ops;
 
-	ops = nl_cache_ops_lookup(kind);
+	ops = nl_cache_ops_lookup_safe(kind);
 	if (!ops)
 		return -NLE_OPNOTSUPP;
 
-	if (!(*result = nl_object_alloc(ops->co_obj_ops)))
+	*result = nl_object_alloc(ops->co_obj_ops);
+	nl_cache_ops_put(ops);
+	if (!*result)
 		return -NLE_NOMEM;
 
 	return 0;
@@ -96,10 +110,14 @@ struct nl_derived_object {
 struct nl_object *nl_object_clone(struct nl_object *obj)
 {
 	struct nl_object *new;
-	struct nl_object_ops *ops = obj_ops(obj);
+	struct nl_object_ops *ops;
 	int doff = offsetof(struct nl_derived_object, data);
 	int size;
 
+	if (!obj)
+		return NULL;
+
+	ops = obj_ops(obj);
 	new = nl_object_alloc(ops);
 	if (!new)
 		return NULL;
@@ -127,6 +145,23 @@ struct nl_object *nl_object_clone(struct nl_object *obj)
 }
 
 /**
+ * Merge a cacheable object
+ * @arg dst		object to be merged into
+ * @arg src		new object to be merged into dst
+ *
+ * @return 0 or a negative error code.
+ */
+int nl_object_update(struct nl_object *dst, struct nl_object *src)
+{
+	struct nl_object_ops *ops = obj_ops(dst);
+
+	if (ops->oo_update)
+		return ops->oo_update(dst, src);
+
+	return -NLE_OPNOTSUPP;
+}
+
+/**
  * Free a cacheable object
  * @arg obj		object to free
  *
@@ -134,7 +169,12 @@ struct nl_object *nl_object_clone(struct nl_object *obj)
  */
 void nl_object_free(struct nl_object *obj)
 {
-	struct nl_object_ops *ops = obj_ops(obj);
+	struct nl_object_ops *ops;
+
+	if (!obj)
+		return;
+
+	ops = obj_ops(obj);
 
 	if (obj->ce_refcnt > 0)
 		NL_DBG(1, "Warning: Freeing object in use...\n");
@@ -145,9 +185,9 @@ void nl_object_free(struct nl_object *obj)
 	if (ops->oo_free_data)
 		ops->oo_free_data(obj);
 
-	free(obj);
-
 	NL_DBG(4, "Freed object %p\n", obj);
+
+	free(obj);
 }
 
 /** @} */
@@ -247,6 +287,9 @@ int nl_object_is_marked(struct nl_object *obj)
  */
 void nl_object_dump(struct nl_object *obj, struct nl_dump_params *params)
 {
+	if (params->dp_buf)
+		memset(params->dp_buf, 0, params->dp_buflen);
+
 	dump_from_ops(obj, params);
 }
 
@@ -270,14 +313,24 @@ void nl_object_dump_buf(struct nl_object *obj, char *buf, size_t len)
 int nl_object_identical(struct nl_object *a, struct nl_object *b)
 {
 	struct nl_object_ops *ops = obj_ops(a);
-	int req_attrs;
+	uint32_t req_attrs;
 
 	/* Both objects must be of same type */
 	if (ops != obj_ops(b))
 		return 0;
 
-	req_attrs = ops->oo_id_attrs;
-	if (req_attrs == ~0)
+	if (ops->oo_id_attrs_get) {
+		int req_attrs_a = ops->oo_id_attrs_get(a);
+		int req_attrs_b = ops->oo_id_attrs_get(b);
+		if (req_attrs_a != req_attrs_b)
+			return 0;
+		req_attrs = req_attrs_a;
+	} else if (ops->oo_id_attrs) {
+		req_attrs = ops->oo_id_attrs;
+	} else {
+		req_attrs = 0xFFFFFFFF;
+	}
+	if (req_attrs == 0xFFFFFFFF)
 		req_attrs = a->ce_mask & b->ce_mask;
 
 	/* Both objects must provide all required attributes to uniquely
@@ -373,6 +426,27 @@ char *nl_object_attr_list(struct nl_object *obj, char *buf, size_t len)
 	return nl_object_attrs2str(obj, obj->ce_mask, buf, len);
 }
 
+/**
+ * Generate object hash key
+ * @arg obj		the object
+ * @arg hashkey		destination buffer to be used for key stream
+ * @arg hashtbl_sz	hash table size
+ *
+ * @return hash key in destination buffer
+ */
+void nl_object_keygen(struct nl_object *obj, uint32_t *hashkey,
+		      uint32_t hashtbl_sz)
+{
+	struct nl_object_ops *ops = obj_ops(obj);
+
+	if (ops->oo_keygen)
+		ops->oo_keygen(obj, hashkey, hashtbl_sz);
+	else
+		*hashkey = 0;
+
+	return;
+}
+
 /** @} */
 
 /**
@@ -441,6 +515,28 @@ int nl_object_get_msgtype(const struct nl_object *obj)
 struct nl_object_ops *nl_object_get_ops(const struct nl_object *obj)
 {
 	return obj->ce_ops;
+}
+
+/**
+ * Return object id attribute mask
+ * @arg obj		object
+ *
+ * @return object id attribute mask
+ */
+uint32_t nl_object_get_id_attrs(struct nl_object *obj)
+{
+	struct nl_object_ops *ops = obj_ops(obj);
+	uint32_t id_attrs;
+
+	if (!ops)
+		return 0;
+
+	if (ops->oo_id_attrs_get)
+		id_attrs = ops->oo_id_attrs_get(obj);
+	else
+		id_attrs = ops->oo_id_attrs;
+
+	return id_attrs;
 }
 
 /** @} */

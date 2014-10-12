@@ -2,14 +2,16 @@
 
 SUBDIRS = lib
 
-AM_CPPFLAGS  = -Wall -I${top_srcdir}/include -I${top_builddir}/include -D_GNU_SOURCE -DSYSCONFDIR=\"$(sysconfdir)/libnl\"
+AM_CPPFLAGS  = -I${top_srcdir}/include -I${top_builddir}/include -D_GNU_SOURCE -DSYSCONFDIR=\"$(sysconfdir)/libnl\"
+AM_CFLAGS = -Wall
 
 LDADD = \
 	${top_builddir}/src/lib/libnl-cli-3.la \
 	${top_builddir}/lib/libnl-3.la \
 	${top_builddir}/lib/libnl-nf-3.la \
 	${top_builddir}/lib/libnl-genl-3.la \
-	${top_builddir}/lib/libnl-route-3.la
+	${top_builddir}/lib/libnl-route-3.la \
+	${top_builddir}/lib/libnl-idiag-3.la
 
 sbin_PROGRAMS = \
 	genl-ctrl-list \
@@ -21,7 +23,8 @@ sbin_PROGRAMS = \
 	nl-link-list
 
 noinst_PROGRAMS = \
-	nf-ct-list nf-log nf-queue nf-monitor \
+	nf-ct-list nf-ct-add nf-log nf-queue nf-monitor \
+	nf-exp-list nf-exp-add nf-exp-delete \
 	nl-addr-add nl-addr-delete nl-addr-list \
 	nl-link-set nl-link-stats \
 	nl-link-ifindex2name nl-link-name2ifindex \
@@ -35,14 +38,20 @@ noinst_PROGRAMS = \
 	nl-list-caches nl-list-sockets \
 	nl-util-addr \
 	nl-link-enslave \
-	nl-link-release
+	nl-link-release \
+	idiag-socket-details
 
 genl_ctrl_list_SOURCES = genl-ctrl-list.c 
 
 nf_ct_list_SOURCES = nf-ct-list.c 
+nf_ct_add_SOURCES = nf-ct-add.c
 nf_log_SOURCES = nf-log.c
 nf_queue_SOURCES = nf-queue.c 
 nf_monitor_SOURCES = nf-monitor.c
+
+nf_exp_list_SOURCES = nf-exp-list.c 
+nf_exp_add_SOURCES = nf-exp-add.c 
+nf_exp_delete_SOURCES = nf-exp-delete.c 
 
 nl_addr_add_SOURCES = nl-addr-add.c
 nl_addr_delete_SOURCES = nl-addr-delete.c
@@ -93,3 +102,5 @@ nl_util_addr_SOURCES = nl-util-addr.c
 nl_pktloc_lookup_SOURCES = nl-pktloc-lookup.c
 
 nl_classid_lookup_SOURCES = nl-classid-lookup.c
+
+idiag_socket_details_SOURCES = idiag-socket-details.c

@@ -6,7 +6,7 @@
  *	License as published by the Free Software Foundation version 2.1
  *	of the License.
  *
- * Copyright (c) 2003-2011 Thomas Graf <tgraf@suug.ch>
+ * Copyright (c) 2003-2012 Thomas Graf <tgraf@suug.ch>
  */
 
 /**
@@ -18,37 +18,49 @@
  * @{
  */
 
-#include <netlink-local.h>
+#include <netlink-private/netlink.h>
 #include <netlink/netlink.h>
 #include <netlink/attr.h>
 #include <netlink/utils.h>
 #include <netlink/object.h>
+#include <netlink/hashtable.h>
+#include <netlink/data.h>
 #include <netlink/route/rtnl.h>
 #include <netlink/route/link.h>
-#include <netlink/route/link/api.h>
+#include <netlink-private/route/link/api.h>
 
 /** @cond SKIP */
-#define LINK_ATTR_MTU     0x0001
-#define LINK_ATTR_LINK    0x0002
-#define LINK_ATTR_TXQLEN  0x0004
-#define LINK_ATTR_WEIGHT  0x0008
-#define LINK_ATTR_MASTER  0x0010
-#define LINK_ATTR_QDISC   0x0020
-#define LINK_ATTR_MAP     0x0040
-#define LINK_ATTR_ADDR    0x0080
-#define LINK_ATTR_BRD     0x0100
-#define LINK_ATTR_FLAGS   0x0200
-#define LINK_ATTR_IFNAME  0x0400
-#define LINK_ATTR_IFINDEX 0x0800
-#define LINK_ATTR_FAMILY  0x1000
-#define LINK_ATTR_ARPTYPE 0x2000
-#define LINK_ATTR_STATS   0x4000
-#define LINK_ATTR_CHANGE  0x8000
-#define LINK_ATTR_OPERSTATE 0x10000
-#define LINK_ATTR_LINKMODE  0x20000
-#define LINK_ATTR_LINKINFO  0x40000
-#define LINK_ATTR_IFALIAS   0x80000
-#define LINK_ATTR_NUM_VF   0x100000
+#define LINK_ATTR_MTU		(1 <<  0)
+#define LINK_ATTR_LINK		(1 <<  1)
+#define LINK_ATTR_TXQLEN	(1 <<  2)
+#define LINK_ATTR_WEIGHT	(1 <<  3)
+#define LINK_ATTR_MASTER	(1 <<  4)
+#define LINK_ATTR_QDISC		(1 <<  5)
+#define LINK_ATTR_MAP		(1 <<  6)
+#define LINK_ATTR_ADDR		(1 <<  7)
+#define LINK_ATTR_BRD		(1 <<  8)
+#define LINK_ATTR_FLAGS		(1 <<  9)
+#define LINK_ATTR_IFNAME	(1 << 10)
+#define LINK_ATTR_IFINDEX	(1 << 11)
+#define LINK_ATTR_FAMILY	(1 << 12)
+#define LINK_ATTR_ARPTYPE	(1 << 13)
+#define LINK_ATTR_STATS		(1 << 14)
+#define LINK_ATTR_CHANGE	(1 << 15)
+#define LINK_ATTR_OPERSTATE	(1 << 16)
+#define LINK_ATTR_LINKMODE	(1 << 17)
+#define LINK_ATTR_LINKINFO	(1 << 18)
+#define LINK_ATTR_IFALIAS	(1 << 19)
+#define LINK_ATTR_NUM_VF	(1 << 20)
+#define LINK_ATTR_PROMISCUITY	(1 << 21)
+#define LINK_ATTR_NUM_TX_QUEUES	(1 << 22)
+#define LINK_ATTR_NUM_RX_QUEUES	(1 << 23)
+#define LINK_ATTR_GROUP		(1 << 24)
+#define LINK_ATTR_CARRIER	(1 << 25)
+#define LINK_ATTR_PROTINFO	(1 << 26)
+#define LINK_ATTR_AF_SPEC	(1 << 27)
+#define LINK_ATTR_PHYS_PORT_ID	(1 << 28)
+#define LINK_ATTR_NS_FD		(1 << 29)
+#define LINK_ATTR_NS_PID	(1 << 30)
 
 static struct nl_cache_ops rtnl_link_ops;
 static struct nl_object_ops link_obj_ops;
@@ -64,8 +76,10 @@ static struct rtnl_link_af_ops *af_lookup_and_alloc(struct rtnl_link *link,
 	if (!af_ops)
 		return NULL;
 
-	if (!(data = rtnl_link_af_alloc(link, af_ops)))
+	if (!(data = rtnl_link_af_alloc(link, af_ops))) {
+		rtnl_link_af_ops_put(af_ops);
 		return NULL;
+	}
 
 	return af_ops;
 }
@@ -161,7 +175,11 @@ static int do_foreach_af(struct rtnl_link *link,
 			if (!(ops = rtnl_link_af_ops_lookup(i)))
 				BUG();
 
-			if ((err = cb(link, ops, link->l_af_data[i], arg)) < 0)
+			err = cb(link, ops, link->l_af_data[i], arg);
+
+			rtnl_link_af_ops_put(ops);
+
+			if (err < 0)
 				return err;
 		}
 	}
@@ -176,6 +194,10 @@ static void release_link_info(struct rtnl_link *link)
 	if (io != NULL) {
 		if (io->io_free)
 			io->io_free(link);
+		else {
+			/* Catch missing io_free() implementations */
+			BUG_ON(link->l_info);
+		}
 		rtnl_link_info_ops_put(io);
 		link->l_info_ops = NULL;
 	}
@@ -191,6 +213,9 @@ static void link_free_data(struct nl_object *c)
 		if ((io = link->l_info_ops) != NULL)
 			release_link_info(link);
 
+		/* proto info af reference */
+		rtnl_link_af_ops_put(link->l_af_ops);
+
 		nl_addr_put(link->l_addr);
 		nl_addr_put(link->l_bcast);
 
@@ -198,6 +223,8 @@ static void link_free_data(struct nl_object *c)
 		free(link->l_info_kind);
 
 		do_foreach_af(link, af_free, NULL);
+
+		nl_data_free(link->l_phys_port_id);
 	}
 }
 
@@ -232,28 +259,40 @@ static int link_clone(struct nl_object *_dst, struct nl_object *_src)
 	if ((err = do_foreach_af(src, af_clone, dst)) < 0)
 		return err;
 
+	if (src->l_phys_port_id)
+		if (!(dst->l_phys_port_id = nl_data_clone(src->l_phys_port_id)))
+			return -NLE_NOMEM;
+
 	return 0;
 }
 
-static struct nla_policy link_policy[IFLA_MAX+1] = {
-	[IFLA_IFNAME]	= { .type = NLA_STRING,
-			    .maxlen = IFNAMSIZ },
-	[IFLA_MTU]	= { .type = NLA_U32 },
-	[IFLA_TXQLEN]	= { .type = NLA_U32 },
-	[IFLA_LINK]	= { .type = NLA_U32 },
-	[IFLA_WEIGHT]	= { .type = NLA_U32 },
-	[IFLA_MASTER]	= { .type = NLA_U32 },
-	[IFLA_OPERSTATE]= { .type = NLA_U8 },
-	[IFLA_LINKMODE] = { .type = NLA_U8 },
-	[IFLA_LINKINFO]	= { .type = NLA_NESTED },
-	[IFLA_QDISC]	= { .type = NLA_STRING,
-			    .maxlen = IFQDISCSIZ },
-	[IFLA_STATS]	= { .minlen = sizeof(struct rtnl_link_stats) },
-	[IFLA_STATS64]	= { .minlen = sizeof(struct rtnl_link_stats64) },
-	[IFLA_MAP]	= { .minlen = sizeof(struct rtnl_link_ifmap) },
-	[IFLA_IFALIAS]	= { .type = NLA_STRING, .maxlen = IFALIASZ },
-	[IFLA_NUM_VF]	= { .type = NLA_U32 },
-	[IFLA_AF_SPEC]	= { .type = NLA_NESTED },
+struct nla_policy rtln_link_policy[IFLA_MAX+1] = {
+	[IFLA_IFNAME]		= { .type = NLA_STRING,
+				    .maxlen = IFNAMSIZ },
+	[IFLA_MTU]		= { .type = NLA_U32 },
+	[IFLA_TXQLEN]		= { .type = NLA_U32 },
+	[IFLA_LINK]		= { .type = NLA_U32 },
+	[IFLA_WEIGHT]		= { .type = NLA_U32 },
+	[IFLA_MASTER]		= { .type = NLA_U32 },
+	[IFLA_OPERSTATE]	= { .type = NLA_U8 },
+	[IFLA_LINKMODE] 	= { .type = NLA_U8 },
+	[IFLA_LINKINFO]		= { .type = NLA_NESTED },
+	[IFLA_QDISC]		= { .type = NLA_STRING,
+				    .maxlen = IFQDISCSIZ },
+	[IFLA_STATS]		= { .minlen = sizeof(struct rtnl_link_stats) },
+	[IFLA_STATS64]		= { .minlen = sizeof(struct rtnl_link_stats64)},
+	[IFLA_MAP]		= { .minlen = sizeof(struct rtnl_link_ifmap) },
+	[IFLA_IFALIAS]		= { .type = NLA_STRING, .maxlen = IFALIASZ },
+	[IFLA_NUM_VF]		= { .type = NLA_U32 },
+	[IFLA_AF_SPEC]		= { .type = NLA_NESTED },
+	[IFLA_PROMISCUITY]	= { .type = NLA_U32 },
+	[IFLA_NUM_TX_QUEUES]	= { .type = NLA_U32 },
+	[IFLA_NUM_RX_QUEUES]	= { .type = NLA_U32 },
+	[IFLA_GROUP]		= { .type = NLA_U32 },
+	[IFLA_CARRIER]		= { .type = NLA_U8 },
+	[IFLA_PHYS_PORT_ID]	= { .type = NLA_UNSPEC },
+	[IFLA_NET_NS_PID]	= { .type = NLA_U32 },
+	[IFLA_NET_NS_FD]	= { .type = NLA_U32 },
 };
 
 static struct nla_policy link_info_policy[IFLA_INFO_MAX+1] = {
@@ -262,52 +301,10 @@ static struct nla_policy link_info_policy[IFLA_INFO_MAX+1] = {
 	[IFLA_INFO_XSTATS]	= { .type = NLA_NESTED },
 };
 
-static int link_msg_parser(struct nl_cache_ops *ops, struct sockaddr_nl *who,
-			   struct nlmsghdr *n, struct nl_parser_param *pp)
+int rtnl_link_info_parse(struct rtnl_link *link, struct nlattr **tb)
 {
-	struct rtnl_link *link;
-	struct ifinfomsg *ifi;
-	struct nlattr *tb[IFLA_MAX+1];
-	struct rtnl_link_af_ops *af_ops = NULL;
-	int err, family;
-
-	link = rtnl_link_alloc();
-	if (link == NULL) {
-		err = -NLE_NOMEM;
-		goto errout;
-	}
-		
-	link->ce_msgtype = n->nlmsg_type;
-
-	if (!nlmsg_valid_hdr(n, sizeof(*ifi)))
-		return -NLE_MSG_TOOSHORT;
-
-	ifi = nlmsg_data(n);
-	link->l_family = family = ifi->ifi_family;
-	link->l_arptype = ifi->ifi_type;
-	link->l_index = ifi->ifi_index;
-	link->l_flags = ifi->ifi_flags;
-	link->l_change = ifi->ifi_change;
-	link->ce_mask = (LINK_ATTR_IFNAME | LINK_ATTR_FAMILY |
-			  LINK_ATTR_ARPTYPE| LINK_ATTR_IFINDEX |
-			  LINK_ATTR_FLAGS | LINK_ATTR_CHANGE);
-
-	if ((af_ops = af_lookup_and_alloc(link, family))) {
-		if (af_ops->ao_protinfo_policy) {
-			memcpy(&link_policy[IFLA_PROTINFO],
-			       af_ops->ao_protinfo_policy,
-			       sizeof(struct nla_policy));
-		}
-	}
-
-	err = nlmsg_parse(n, sizeof(*ifi), tb, IFLA_MAX, link_policy);
-	if (err < 0)
-		goto errout;
-
-	if (tb[IFLA_IFNAME] == NULL) {
-		err = -NLE_MISSING_ATTR;
-		goto errout;
-	}
+	if (tb[IFLA_IFNAME] == NULL)
+		return -NLE_MISSING_ATTR;
 
 	nla_strlcpy(link->l_name, tb[IFLA_IFNAME], IFNAMSIZ);
 
@@ -400,10 +397,8 @@ static int link_msg_parser(struct nl_cache_ops *ops, struct sockaddr_nl *who,
 
 	if (tb[IFLA_ADDRESS]) {
 		link->l_addr = nl_addr_alloc_attr(tb[IFLA_ADDRESS], AF_UNSPEC);
-		if (link->l_addr == NULL) {
-			err = -NLE_NOMEM;
-			goto errout;
-		}
+		if (link->l_addr == NULL)
+			return -NLE_NOMEM;
 		nl_addr_set_family(link->l_addr,
 				   nl_addr_guess_family(link->l_addr));
 		link->ce_mask |= LINK_ATTR_ADDR;
@@ -412,10 +407,8 @@ static int link_msg_parser(struct nl_cache_ops *ops, struct sockaddr_nl *who,
 	if (tb[IFLA_BROADCAST]) {
 		link->l_bcast = nl_addr_alloc_attr(tb[IFLA_BROADCAST],
 						   AF_UNSPEC);
-		if (link->l_bcast == NULL) {
-			err = -NLE_NOMEM;
-			goto errout;
-		}
+		if (link->l_bcast == NULL)
+			return -NLE_NOMEM;
 		nl_addr_set_family(link->l_bcast,
 				   nl_addr_guess_family(link->l_bcast));
 		link->ce_mask |= LINK_ATTR_BRD;
@@ -447,6 +440,11 @@ static int link_msg_parser(struct nl_cache_ops *ops, struct sockaddr_nl *who,
 		link->ce_mask |= LINK_ATTR_MASTER;
 	}
 
+	if (tb[IFLA_CARRIER]) {
+		link->l_carrier = nla_get_u8(tb[IFLA_CARRIER]);
+		link->ce_mask |= LINK_ATTR_CARRIER;
+	}
+
 	if (tb[IFLA_OPERSTATE]) {
 		link->l_operstate = nla_get_u8(tb[IFLA_OPERSTATE]);
 		link->ce_mask |= LINK_ATTR_OPERSTATE;
@@ -459,12 +457,74 @@ static int link_msg_parser(struct nl_cache_ops *ops, struct sockaddr_nl *who,
 
 	if (tb[IFLA_IFALIAS]) {
 		link->l_ifalias = nla_strdup(tb[IFLA_IFALIAS]);
-		if (link->l_ifalias == NULL) {
-			err = -NLE_NOMEM;
-			goto errout;
-		}
+		if (link->l_ifalias == NULL)
+			return -NLE_NOMEM;
 		link->ce_mask |= LINK_ATTR_IFALIAS;
 	}
+
+	if (tb[IFLA_NET_NS_FD]) {
+		link->l_ns_fd = nla_get_u32(tb[IFLA_NET_NS_FD]);
+		link->ce_mask |= LINK_ATTR_NS_FD;
+	}
+
+	if (tb[IFLA_NET_NS_PID]) {
+		link->l_ns_pid = nla_get_u32(tb[IFLA_NET_NS_PID]);
+		link->ce_mask |= LINK_ATTR_NS_PID;
+	}
+
+	return 0;
+}
+
+static int link_msg_parser(struct nl_cache_ops *ops, struct sockaddr_nl *who,
+			   struct nlmsghdr *n, struct nl_parser_param *pp)
+{
+	struct rtnl_link *link;
+	struct ifinfomsg *ifi;
+	struct nlattr *tb[IFLA_MAX+1];
+	struct rtnl_link_af_ops *af_ops = NULL;
+	int err, family;
+	struct nla_policy real_link_policy[IFLA_MAX+1];
+
+	memcpy(&real_link_policy, rtln_link_policy, sizeof(rtln_link_policy));
+
+	link = rtnl_link_alloc();
+	if (link == NULL) {
+		err = -NLE_NOMEM;
+		goto errout;
+	}
+
+	link->ce_msgtype = n->nlmsg_type;
+
+	if (!nlmsg_valid_hdr(n, sizeof(*ifi)))
+		return -NLE_MSG_TOOSHORT;
+
+	ifi = nlmsg_data(n);
+	link->l_family = family = ifi->ifi_family;
+	link->l_arptype = ifi->ifi_type;
+	link->l_index = ifi->ifi_index;
+	link->l_flags = ifi->ifi_flags;
+	link->l_change = ifi->ifi_change;
+	link->ce_mask = (LINK_ATTR_IFNAME | LINK_ATTR_FAMILY |
+			  LINK_ATTR_ARPTYPE| LINK_ATTR_IFINDEX |
+			  LINK_ATTR_FLAGS | LINK_ATTR_CHANGE);
+
+	if ((af_ops = af_lookup_and_alloc(link, family))) {
+		if (af_ops->ao_protinfo_policy) {
+			memcpy(&real_link_policy[IFLA_PROTINFO],
+			       af_ops->ao_protinfo_policy,
+			       sizeof(struct nla_policy));
+		}
+
+		link->l_af_ops = af_ops;
+	}
+
+	err = nlmsg_parse(n, sizeof(*ifi), tb, IFLA_MAX, real_link_policy);
+	if (err < 0)
+		return err;
+
+	err = rtnl_link_info_parse(link, tb);
+	if (err < 0)
+		return err;
 
 	if (tb[IFLA_NUM_VF]) {
 		link->l_num_vf = nla_get_u32(tb[IFLA_NUM_VF]);
@@ -481,15 +541,22 @@ static int link_msg_parser(struct nl_cache_ops *ops, struct sockaddr_nl *who,
 
 		if (li[IFLA_INFO_KIND]) {
 			struct rtnl_link_info_ops *ops;
-			char *kind;
+			char *kind = nla_get_string(li[IFLA_INFO_KIND]);
+			int af;
 
-			kind = nla_strdup(li[IFLA_INFO_KIND]);
-			if (kind == NULL) {
-				err = -NLE_NOMEM;
+			err = rtnl_link_set_type(link, kind);
+			if (err < 0)
 				goto errout;
+
+			if ((af = nl_str2af(kind)) >= 0 &&
+				!af_ops && (af_ops = af_lookup_and_alloc(link, af))) {
+
+				if (af_ops->ao_protinfo_policy) {
+					tb[IFLA_PROTINFO] = (struct nlattr *)af_ops->ao_protinfo_policy;
+				}
+				link->l_family = family = af;
+				link->l_af_ops = af_ops;
 			}
-			link->l_info_kind = kind;
-			link->ce_mask |= LINK_ATTR_LINKINFO;
 
 			ops = rtnl_link_info_ops_lookup(kind);
 			link->l_info_ops = ops;
@@ -506,6 +573,7 @@ static int link_msg_parser(struct nl_cache_ops *ops, struct sockaddr_nl *who,
 				}
 			}
 		}
+		link->ce_mask |= LINK_ATTR_LINKINFO;
 	}
 
 	if (tb[IFLA_PROTINFO] && af_ops && af_ops->ao_parse_protinfo) {
@@ -513,6 +581,7 @@ static int link_msg_parser(struct nl_cache_ops *ops, struct sockaddr_nl *who,
 						link->l_af_data[link->l_family]);
 		if (err < 0)
 			goto errout;
+		link->ce_mask |= LINK_ATTR_PROTINFO;
 	}
 
 	if (tb[IFLA_AF_SPEC]) {
@@ -525,14 +594,41 @@ static int link_msg_parser(struct nl_cache_ops *ops, struct sockaddr_nl *who,
 				char *af_data = link->l_af_data[nla_type(af_attr)];
 
 				err = af_ops->ao_parse_af(link, af_attr, af_data);
-
-				rtnl_link_af_ops_put(af_ops);
-
 				if (err < 0)
 					goto errout;
 			}
 
 		}
+		link->ce_mask |= LINK_ATTR_AF_SPEC;
+	}
+
+	if (tb[IFLA_PROMISCUITY]) {
+		link->l_promiscuity = nla_get_u32(tb[IFLA_PROMISCUITY]);
+		link->ce_mask |= LINK_ATTR_PROMISCUITY;
+	}
+
+	if (tb[IFLA_NUM_TX_QUEUES]) {
+		link->l_num_tx_queues = nla_get_u32(tb[IFLA_NUM_TX_QUEUES]);
+		link->ce_mask |= LINK_ATTR_NUM_TX_QUEUES;
+	}
+
+	if (tb[IFLA_NUM_RX_QUEUES]) {
+		link->l_num_rx_queues = nla_get_u32(tb[IFLA_NUM_RX_QUEUES]);
+		link->ce_mask |= LINK_ATTR_NUM_RX_QUEUES;
+	}
+
+	if (tb[IFLA_GROUP]) {
+		link->l_group = nla_get_u32(tb[IFLA_GROUP]);
+		link->ce_mask |= LINK_ATTR_GROUP;
+	}
+
+	if (tb[IFLA_PHYS_PORT_ID]) {
+		link->l_phys_port_id = nl_data_alloc_attr(tb[IFLA_PHYS_PORT_ID]);
+		if (link->l_phys_port_id == NULL) {
+			err = -NLE_NOMEM;
+			goto errout;
+		}
+		link->ce_mask |= LINK_ATTR_PHYS_PORT_ID;
 	}
 
 	err = pp->pp_cb((struct nl_object *) link, pp);
@@ -540,19 +636,6 @@ errout:
 	rtnl_link_af_ops_put(af_ops);
 	rtnl_link_put(link);
 	return err;
-}
-
-static int link_event_filter(struct nl_cache *cache, struct nl_object *obj)
-{
-	struct rtnl_link *link = (struct rtnl_link *) obj;
-
-	/*
-	 * Ignore bridging messages when keeping the cache manager up to date.
-	 */
-	if (link->l_family == AF_BRIDGE)
-		return NL_SKIP;
-
-	return NL_OK;
 }
 
 static int link_request_update(struct nl_cache *cache, struct nl_sock *sk)
@@ -565,8 +648,14 @@ static int link_request_update(struct nl_cache *cache, struct nl_sock *sk)
 static void link_dump_line(struct nl_object *obj, struct nl_dump_params *p)
 {
 	char buf[128];
-	struct nl_cache *cache = dp_cache(obj);
+	struct nl_cache *cache = obj->ce_cache;
 	struct rtnl_link *link = (struct rtnl_link *) obj;
+	int fetched_cache = 0;
+
+	if (!cache) {
+		cache = nl_cache_mngt_require_safe("route/link");
+		fetched_cache = 1;
+	}
 
 	nl_dump_line(p, "%s %s ", link->l_name,
 		     nl_llproto2str(link->l_arptype, buf, sizeof(buf)));
@@ -575,10 +664,13 @@ static void link_dump_line(struct nl_object *obj, struct nl_dump_params *p)
 		nl_dump(p, "%s ", nl_addr2str(link->l_addr, buf, sizeof(buf)));
 
 	if (link->ce_mask & LINK_ATTR_MASTER) {
-		struct rtnl_link *master = rtnl_link_get(cache, link->l_master);
-		nl_dump(p, "master %s ", master ? master->l_name : "inv");
-		if (master)
-			rtnl_link_put(master);
+		if (cache) {
+			struct rtnl_link *master = rtnl_link_get(cache, link->l_master);
+			nl_dump(p, "master %s ", master ? master->l_name : "inv");
+			if (master)
+				rtnl_link_put(master);
+		} else
+			nl_dump(p, "master %d ", link->l_master);
 	}
 
 	rtnl_link_flags2str(link->l_flags, buf, sizeof(buf));
@@ -586,11 +678,17 @@ static void link_dump_line(struct nl_object *obj, struct nl_dump_params *p)
 		nl_dump(p, "<%s> ", buf);
 
 	if (link->ce_mask & LINK_ATTR_LINK) {
-		struct rtnl_link *ll = rtnl_link_get(cache, link->l_link);
-		nl_dump(p, "slave-of %s ", ll ? ll->l_name : "NONE");
-		if (ll)
-			rtnl_link_put(ll);
+		if (cache) {
+			struct rtnl_link *ll = rtnl_link_get(cache, link->l_link);
+			nl_dump(p, "slave-of %s ", ll ? ll->l_name : "NONE");
+			if (ll)
+				rtnl_link_put(ll);
+		} else
+			nl_dump(p, "slave-of %d ", link->l_link);
 	}
+
+	if (link->ce_mask & LINK_ATTR_GROUP)
+		nl_dump(p, "group %u ", link->l_group);
 
 	if (link->l_info_ops && link->l_info_ops->io_dump[NL_DUMP_LINE])
 		link->l_info_ops->io_dump[NL_DUMP_LINE](link, p);
@@ -598,6 +696,9 @@ static void link_dump_line(struct nl_object *obj, struct nl_dump_params *p)
 	do_foreach_af(link, af_dump_line, p);
 
 	nl_dump(p, "\n");
+
+	if (fetched_cache)
+		nl_cache_put(cache);
 }
 
 static void link_dump_details(struct nl_object *obj, struct nl_dump_params *p)
@@ -619,6 +720,8 @@ static void link_dump_details(struct nl_object *obj, struct nl_dump_params *p)
 	if (link->ce_mask & LINK_ATTR_IFINDEX)
 		nl_dump(p, "index %u ", link->l_index);
 
+	if (link->ce_mask & LINK_ATTR_PROMISCUITY && link->l_promiscuity > 0)
+		nl_dump(p, "promisc-mode (%u users) ", link->l_promiscuity);
 
 	nl_dump(p, "\n");
 
@@ -626,6 +729,12 @@ static void link_dump_details(struct nl_object *obj, struct nl_dump_params *p)
 		nl_dump_line(p, "    alias %s\n", link->l_ifalias);
 
 	nl_dump_line(p, "    ");
+
+	if (link->ce_mask & LINK_ATTR_NUM_TX_QUEUES)
+		nl_dump(p, "txq %u ", link->l_num_tx_queues);
+
+	if (link->ce_mask & LINK_ATTR_NUM_RX_QUEUES)
+		nl_dump(p, "rxq %u ", link->l_num_rx_queues);
 
 	if (link->ce_mask & LINK_ATTR_BRD)
 		nl_dump(p, "brd %s ", nl_addr2str(link->l_bcast, buf,
@@ -640,8 +749,13 @@ static void link_dump_details(struct nl_object *obj, struct nl_dump_params *p)
 	if (link->ce_mask & LINK_ATTR_NUM_VF)
 		nl_dump(p, "num-vf %u ", link->l_num_vf);
 
-	nl_dump(p, "mode %s\n",
+	nl_dump(p, "mode %s ",
 		rtnl_link_mode2str(link->l_linkmode, buf, sizeof(buf)));
+
+	nl_dump(p, "carrier %s",
+		rtnl_link_carrier2str(link->l_carrier, buf, sizeof(buf)));
+
+	nl_dump(p, "\n");
 
 	if (link->l_info_ops && link->l_info_ops->io_dump[NL_DUMP_DETAILS])
 		link->l_info_ops->io_dump[NL_DUMP_DETAILS](link, p);
@@ -662,7 +776,7 @@ static void link_dump_stats(struct nl_object *obj, struct nl_dump_params *p)
 
 	res = nl_cancel_down_bytes(link->l_stats[RTNL_LINK_RX_BYTES], &unit);
 
-	strcpy(fmt, "     RX %X.2f %s %10llu %10llu %10llu %10llu %10llu\n");
+	strcpy(fmt, "     RX %X.2f %s %10" PRIu64 " %10" PRIu64 " %10" PRIu64 " %10" PRIu64 " %10" PRIu64 "\n");
 	fmt[9] = *unit == 'B' ? '9' : '7';
 	
 	nl_dump_line(p, fmt, res, unit,
@@ -674,7 +788,7 @@ static void link_dump_stats(struct nl_object *obj, struct nl_dump_params *p)
 
 	res = nl_cancel_down_bytes(link->l_stats[RTNL_LINK_TX_BYTES], &unit);
 
-	strcpy(fmt, "     TX %X.2f %s %10llu %10llu %10llu %10llu %10llu\n");
+	strcpy(fmt, "     TX %X.2f %s %10" PRIu64 " %10" PRIu64 " %10" PRIu64 " %10" PRIu64 " %10" PRIu64 "\n");
 	fmt[9] = *unit == 'B' ? '9' : '7';
 	
 	nl_dump_line(p, fmt, res, unit,
@@ -760,6 +874,29 @@ static int link_handle_event(struct nl_object *a, struct rtnl_link_event_cb *cb)
 }
 #endif
 
+
+static void link_keygen(struct nl_object *obj, uint32_t *hashkey,
+        uint32_t table_sz)
+{
+	struct rtnl_link *link = (struct rtnl_link *) obj;
+	unsigned int lkey_sz;
+	struct link_hash_key {
+		uint32_t	l_index;
+		uint32_t	l_family;
+	} __attribute__((packed)) lkey;
+
+	lkey_sz = sizeof(lkey);
+	lkey.l_index = link->l_index;
+	lkey.l_family = link->l_family;
+
+	*hashkey = nl_hash(&lkey, lkey_sz, 0) % table_sz;
+
+	NL_DBG(5, "link %p key (dev %d fam %d) keysz %d, hash 0x%x\n",
+	       link, lkey.l_index, lkey.l_family, lkey_sz, *hashkey);
+
+	return;
+}
+
 static int link_compare(struct nl_object *_a, struct nl_object *_b,
 			uint32_t attrs, int flags)
 {
@@ -784,6 +921,10 @@ static int link_compare(struct nl_object *_a, struct nl_object *_b,
 	diff |= LINK_DIFF(BRD,		nl_addr_cmp(a->l_bcast, b->l_bcast));
 	diff |= LINK_DIFF(IFALIAS,	strcmp(a->l_ifalias, b->l_ifalias));
 	diff |= LINK_DIFF(NUM_VF,	a->l_num_vf != b->l_num_vf);
+	diff |= LINK_DIFF(PROMISCUITY,	a->l_promiscuity != b->l_promiscuity);
+	diff |= LINK_DIFF(NUM_TX_QUEUES,a->l_num_tx_queues != b->l_num_tx_queues);
+	diff |= LINK_DIFF(NUM_RX_QUEUES,a->l_num_rx_queues != b->l_num_rx_queues);
+	diff |= LINK_DIFF(GROUP,	a->l_group != b->l_group);
 
 	if (flags & LOOSE_COMPARISON)
 		diff |= LINK_DIFF(FLAGS,
@@ -791,9 +932,22 @@ static int link_compare(struct nl_object *_a, struct nl_object *_b,
 	else
 		diff |= LINK_DIFF(FLAGS, a->l_flags != b->l_flags);
 
-#undef LINK_DIFF
+	/*
+	 * Compare LINK_ATTR_PROTINFO af_data
+	 */
+	if (a->l_family == b->l_family) {
+		if (rtnl_link_af_data_compare(a, b, a->l_family) != 0)
+			goto protinfo_mismatch;
+	}
 
+out:
 	return diff;
+
+protinfo_mismatch:
+	diff |= LINK_DIFF(PROTINFO, 1);
+	goto out;
+
+#undef LINK_DIFF
 }
 
 static const struct trans_tbl link_attrs[] = {
@@ -817,6 +971,12 @@ static const struct trans_tbl link_attrs[] = {
 	__ADD(LINK_ATTR_LINKMODE, linkmode)
 	__ADD(LINK_ATTR_IFALIAS, ifalias)
 	__ADD(LINK_ATTR_NUM_VF, num_vf)
+	__ADD(LINK_ATTR_PROMISCUITY, promiscuity)
+	__ADD(LINK_ATTR_NUM_TX_QUEUES, num_tx_queues)
+	__ADD(LINK_ATTR_NUM_RX_QUEUES, num_rx_queues)
+	__ADD(LINK_ATTR_GROUP, group)
+	__ADD(LINK_ATTR_CARRIER, carrier)
+	__ADD(LINK_ATTR_PHYS_PORT_ID, phys_port_id)
 };
 
 static char *link_attrs2str(int attrs, char *buf, size_t len)
@@ -837,11 +997,12 @@ static char *link_attrs2str(int attrs, char *buf, size_t len)
  * @arg family		Link address family or AF_UNSPEC
  * @arg result		Pointer to store resulting cache.
  *
- * Allocates and initializes a new link cache. A netlink message is sent to
- * the kernel requesting a full dump of all configured links. The returned
- * messages are parsed and filled into the cache. If the operation succeeds
- * the resulting cache will a link object for each link configured in the
- * kernel.
+ * Allocates and initializes a new link cache. If \c sk is valid, a netlink
+ * message is sent to the kernel requesting a full dump of all configured
+ * links. The returned messages are parsed and filled into the cache. If
+ * the operation succeeds, the resulting cache will contain a link object for
+ * each link configured in the kernel. If \c sk is NULL, returns 0 but the
+ * cache is still empty.
  *
  * If \c family is set to an address family other than \c AF_UNSPEC the
  * contents of the cache can be limited to a specific address family.
@@ -1025,7 +1186,7 @@ int rtnl_link_get_kernel(struct nl_sock *sk, int ifindex, const char *name,
 
 	/* If an object has been returned, we also need to wait for the ACK */
 	 if (err == 0 && obj)
-		 nl_wait_for_ack(sk);
+		 wait_for_ack(sk);
 
 	return 0;
 }
@@ -1083,19 +1244,8 @@ int rtnl_link_name2i(struct nl_cache *cache, const char *name)
 
 /** @} */
 
-static int build_link_msg(int cmd, struct ifinfomsg *hdr,
-			  struct rtnl_link *link, int flags, struct nl_msg **result)
+int rtnl_link_fill_info(struct nl_msg *msg, struct rtnl_link *link)
 {
-	struct nl_msg *msg;
-	struct nlattr *af_spec;
-
-	msg = nlmsg_alloc_simple(cmd, flags);
-	if (!msg)
-		return -NLE_NOMEM;
-
-	if (nlmsg_append(msg, hdr, sizeof(*hdr), NLMSG_ALIGNTO) < 0)
-		goto nla_put_failure;
-
 	if (link->ce_mask & LINK_ATTR_ADDR)
 		NLA_PUT_ADDR(msg, IFLA_ADDRESS, link->l_addr);
 
@@ -1117,6 +1267,9 @@ static int build_link_msg(int cmd, struct ifinfomsg *hdr,
 	if (link->ce_mask & LINK_ATTR_OPERSTATE)
 		NLA_PUT_U8(msg, IFLA_OPERSTATE, link->l_operstate);
 
+	if (link->ce_mask & LINK_ATTR_CARRIER)
+		NLA_PUT_U8(msg, IFLA_CARRIER, link->l_carrier);
+
 	if (link->ce_mask & LINK_ATTR_LINKMODE)
 		NLA_PUT_U8(msg, IFLA_LINKMODE, link->l_linkmode);
 
@@ -1128,6 +1281,43 @@ static int build_link_msg(int cmd, struct ifinfomsg *hdr,
 
 	if (link->ce_mask & LINK_ATTR_MASTER)
 		NLA_PUT_U32(msg, IFLA_MASTER, link->l_master);
+
+	if (link->ce_mask & LINK_ATTR_NUM_TX_QUEUES)
+		NLA_PUT_U32(msg, IFLA_NUM_TX_QUEUES, link->l_num_tx_queues);
+
+	if (link->ce_mask & LINK_ATTR_NUM_RX_QUEUES)
+		NLA_PUT_U32(msg, IFLA_NUM_RX_QUEUES, link->l_num_rx_queues);
+
+	if (link->ce_mask & LINK_ATTR_NS_FD)
+		NLA_PUT_U32(msg, IFLA_NET_NS_FD, link->l_ns_fd);
+
+	if (link->ce_mask & LINK_ATTR_NS_PID)
+		NLA_PUT_U32(msg, IFLA_NET_NS_PID, link->l_ns_pid);
+
+	return 0;
+
+nla_put_failure:
+	return -NLE_MSGSIZE;
+}
+
+static int build_link_msg(int cmd, struct ifinfomsg *hdr,
+			  struct rtnl_link *link, int flags, struct nl_msg **result)
+{
+	struct nl_msg *msg;
+	struct nlattr *af_spec;
+
+	msg = nlmsg_alloc_simple(cmd, flags);
+	if (!msg)
+		return -NLE_NOMEM;
+
+	if (nlmsg_append(msg, hdr, sizeof(*hdr), NLMSG_ALIGNTO) < 0)
+		goto nla_put_failure;
+
+	if (rtnl_link_fill_info(msg, link))
+		goto nla_put_failure;
+
+	if (link->ce_mask & LINK_ATTR_GROUP)
+		NLA_PUT_U32(msg, IFLA_GROUP, link->l_group);
 
 	if (link->ce_mask & LINK_ATTR_LINKINFO) {
 		struct nlattr *info;
@@ -1442,8 +1632,7 @@ struct rtnl_link *rtnl_link_alloc(void)
 
 /**
  * Return a link object reference
- *
- * @copydetails nl_object_put()
+ * @arg link		Link object
  */
 void rtnl_link_put(struct rtnl_link *link)
 {
@@ -1481,6 +1670,28 @@ void rtnl_link_set_name(struct rtnl_link *link, const char *name)
 char *rtnl_link_get_name(struct rtnl_link *link)
 {
 	return link->ce_mask & LINK_ATTR_IFNAME ? link->l_name : NULL;
+}
+
+/**
+ * Set the group identifier of a link object
+ * @arg link		Link object
+ * @arg group		Group identifier
+ */
+void rtnl_link_set_group(struct rtnl_link *link, uint32_t group)
+{
+	link->l_group = group;
+	link->ce_mask |= LINK_ATTR_GROUP;
+}
+
+/**
+ * Return the group identifier of link object
+ * @arg link		Link object
+ *
+ * @return Group identifier or 0 if not set.
+ */
+uint32_t rtnl_link_get_group(struct rtnl_link *link)
+{
+	return link->l_group;
 }
 
 static inline void __assign_addr(struct rtnl_link *link, struct nl_addr **pos,
@@ -1609,6 +1820,14 @@ void rtnl_link_set_family(struct rtnl_link *link, int family)
 {
 	link->l_family = family;
 	link->ce_mask |= LINK_ATTR_FAMILY;
+
+	if (link->l_af_ops) {
+		af_free(link, link->l_af_ops,
+			link->l_af_data[link->l_af_ops->ao_family], NULL);
+		link->l_af_data[link->l_af_ops->ao_family] = NULL;
+	}
+
+	link->l_af_ops = af_lookup_and_alloc(link, family);
 }
 
 /**
@@ -1777,6 +1996,31 @@ int rtnl_link_get_master(struct rtnl_link *link)
 }
 
 /**
+ * Set carrier of link object
+ * @arg link		Link object
+ * @arg status		New carrier status
+ *
+ * @see rtnl_link_get_carrier()
+ */
+void rtnl_link_set_carrier(struct rtnl_link *link, uint8_t status)
+{
+	link->l_carrier = status;
+	link->ce_mask |= LINK_ATTR_CARRIER;
+}
+
+/**
+ * Return carrier status of link object
+ * @arg link		Link object
+ *
+ * @see rtnl_link_set_master()
+ * @return Carrier state.
+ */
+uint8_t rtnl_link_get_carrier(struct rtnl_link *link)
+{
+	return link->l_carrier;
+}
+
+/**
  * Set operational status of link object
  * @arg link		Link object
  * @arg status		New opertional status
@@ -1858,11 +2102,13 @@ const char *rtnl_link_get_ifalias(struct rtnl_link *link)
 void rtnl_link_set_ifalias(struct rtnl_link *link, const char *alias)
 {
 	free(link->l_ifalias);
-	link->ce_mask &= ~LINK_ATTR_IFALIAS;
 
 	if (alias) {
 		link->l_ifalias = strdup(alias);
 		link->ce_mask |= LINK_ATTR_IFALIAS;
+	} else {
+		link->l_ifalias = NULL;
+		link->ce_mask &= ~LINK_ATTR_IFALIAS;
 	}
 }
 
@@ -2010,6 +2256,128 @@ errout:
 char *rtnl_link_get_type(struct rtnl_link *link)
 {
 	return link->l_info_kind;
+}
+
+/**
+ * Set link promiscuity count
+ * @arg link		Link object
+ * @arg count		New promiscuity count
+ *
+ * @copydoc read_only_attribute
+ *
+ * @see rtnl_link_get_promiscuity()
+ */
+void rtnl_link_set_promiscuity(struct rtnl_link *link, uint32_t count)
+{
+	link->l_promiscuity = count;
+	link->ce_mask |= LINK_ATTR_PROMISCUITY;
+}
+
+/**
+ * Return link promiscuity count
+ * @arg link		Link object
+ *
+ * @see rtnl_link_set_promiscuity()
+ * @return Link promiscuity count or 0
+ */
+uint32_t rtnl_link_get_promiscuity(struct rtnl_link *link)
+{
+	return link->l_promiscuity;
+}
+
+/**
+ * Set number of TX queues
+ * @arg link		Link object
+ * @arg nqueues		Number of queues
+ *
+ * Sets the number of TX queues of the link object. The value is considered
+ * by the kernel when creating network devices that can be created via
+ * netlink. The value will be passed on to alloc_netdev_mqs()
+ *
+ * Therefore use of rtnl_link_set_num_tx_queues() only makes sense in
+ * combination with rtnl_link_add() or if the link object is used as a filter.
+ *
+ * @see rtnl_link_get_num_tx_queues()
+ */
+void rtnl_link_set_num_tx_queues(struct rtnl_link *link, uint32_t nqueues)
+{
+	link->l_num_tx_queues = nqueues;
+	link->ce_mask |= LINK_ATTR_NUM_TX_QUEUES;
+}
+
+/**
+ * Return number of TX queues
+ * @arg link		Link object
+ *
+ * @return Number of TX queues or 0
+ */
+uint32_t rtnl_link_get_num_tx_queues(struct rtnl_link *link)
+{
+	return link->l_num_tx_queues;
+}
+
+/**
+ * Set number of RX queues
+ * @arg link		Link object
+ * @arg nqueues		Number of queues
+ *
+ * Sets the number of RX queues of the link object. The value is considered
+ * by the kernel when creating network devices that can be created via
+ * netlink. The value will be passed on to alloc_netdev_mqs()
+ *
+ * Therefore use of rtnl_link_set_num_rx_queues() only makes sense in
+ * combination with rtnl_link_add() or if the link object is used as a filter.
+ *
+ * @see rtnl_link_get_num_rx_queues()
+ */
+void rtnl_link_set_num_rx_queues(struct rtnl_link *link, uint32_t nqueues)
+{
+	link->l_num_rx_queues = nqueues;
+	link->ce_mask |= LINK_ATTR_NUM_RX_QUEUES;
+}
+
+/**
+ * Return number of RX queues
+ * @arg link		Link object
+ *
+ * @return Number of RX queues or 0
+ */
+uint32_t rtnl_link_get_num_rx_queues(struct rtnl_link *link)
+{
+	return link->l_num_rx_queues;
+}
+
+/**
+ * Return physical port id of link object
+ * @arg link		Link object
+ *
+ * @return Physical port id or NULL if not set.
+ */
+struct nl_data *rtnl_link_get_phys_port_id(struct rtnl_link *link)
+{
+	return link->l_phys_port_id;
+}
+
+void rtnl_link_set_ns_fd(struct rtnl_link *link, int fd)
+{
+	link->l_ns_fd = fd;
+	link->ce_mask |= LINK_ATTR_NS_FD;
+}
+
+int rtnl_link_get_ns_fd(struct rtnl_link *link)
+{
+	return link->l_ns_fd;
+}
+
+void rtnl_link_set_ns_pid(struct rtnl_link *link, pid_t pid)
+{
+	link->l_ns_pid = pid;
+	link->ce_mask |= LINK_ATTR_NS_PID;
+}
+
+pid_t rtnl_link_get_ns_pid(struct rtnl_link *link)
+{
+	return link->l_ns_pid;
 }
 
 /** @} */
@@ -2233,6 +2601,12 @@ static const struct trans_tbl link_stats[] = {
 	__ADD(RTNL_LINK_ICMP6_INERRORS, ICMP6_InErrors)
 	__ADD(RTNL_LINK_ICMP6_OUTMSGS, ICMP6_OutMsgs)
 	__ADD(RTNL_LINK_ICMP6_OUTERRORS, ICMP6_OutErrors)
+	__ADD(RTNL_LINK_ICMP6_CSUMERRORS, ICMP6_InCsumErrors)
+	__ADD(RTNL_LINK_IP6_CSUMERRORS, Ip6_InCsumErrors)
+	__ADD(RTNL_LINK_IP6_NOECTPKTS, Ip6_InNoECTPkts)
+	__ADD(RTNL_LINK_IP6_ECT1PKTS, Ip6_InECT1Pkts)
+	__ADD(RTNL_LINK_IP6_ECT0PKTS, Ip6_InECT0Pkts)
+	__ADD(RTNL_LINK_IP6_CEPKTS, Ip6_InCEPkts)
 };
 
 char *rtnl_link_stat2str(int st, char *buf, size_t len)
@@ -2272,6 +2646,11 @@ static const struct trans_tbl link_modes[] = {
 	__ADD(IF_LINK_MODE_DORMANT, dormant)
 };
 
+static const struct trans_tbl carrier_states[] = {
+	__ADD(IF_CARRIER_DOWN, down)
+	__ADD(IF_CARRIER_UP, up)
+};
+
 char *rtnl_link_mode2str(uint8_t st, char *buf, size_t len)
 {
 	return __type2str(st, buf, len, link_modes, ARRAY_SIZE(link_modes));
@@ -2280,6 +2659,17 @@ char *rtnl_link_mode2str(uint8_t st, char *buf, size_t len)
 int rtnl_link_str2mode(const char *name)
 {
 	return __str2type(name, link_modes, ARRAY_SIZE(link_modes));
+}
+
+char *rtnl_link_carrier2str(uint8_t st, char *buf, size_t len)
+{
+	return __type2str(st, buf, len, carrier_states,
+			  ARRAY_SIZE(carrier_states));
+}
+
+int rtnl_link_str2carrier(const char *name)
+{
+	return __str2type(name, carrier_states, ARRAY_SIZE(carrier_states));
 }
 
 /** @} */
@@ -2334,12 +2724,14 @@ static struct nl_object_ops link_obj_ops = {
 	    [NL_DUMP_STATS]	= link_dump_stats,
 	},
 	.oo_compare		= link_compare,
+	.oo_keygen		= link_keygen,
 	.oo_attrs2str		= link_attrs2str,
-	.oo_id_attrs		= LINK_ATTR_IFINDEX,
+	.oo_id_attrs		= LINK_ATTR_IFINDEX | LINK_ATTR_FAMILY,
 };
 
 static struct nl_af_group link_groups[] = {
 	{ AF_UNSPEC,	RTNLGRP_LINK },
+	{ AF_BRIDGE,    RTNLGRP_LINK },
 	{ END_OF_GROUP_LIST },
 };
 
@@ -2357,7 +2749,6 @@ static struct nl_cache_ops rtnl_link_ops = {
 	.co_groups		= link_groups,
 	.co_request_update	= link_request_update,
 	.co_msg_parser		= link_msg_parser,
-	.co_event_filter	= link_event_filter,
 	.co_obj_ops		= &link_obj_ops,
 };
 

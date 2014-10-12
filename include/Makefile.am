@@ -10,6 +10,7 @@ nobase_libnlinclude_HEADERS = \
 	netlink/genl/genl.h \
 	netlink/genl/mngt.h \
 	netlink/netfilter/ct.h \
+	netlink/netfilter/exp.h \
 	netlink/netfilter/log.h \
 	netlink/netfilter/log_msg.h \
 	netlink/netfilter/netfilter.h \
@@ -18,18 +19,20 @@ nobase_libnlinclude_HEADERS = \
 	netlink/netfilter/queue_msg.h \
 	netlink/addr.h \
 	netlink/attr.h \
-	netlink/cache-api.h \
 	netlink/cache.h \
 	netlink/data.h \
 	netlink/errno.h \
 	netlink/handlers.h \
+	netlink/hash.h \
+	netlink/hashtable.h \
 	netlink/list.h \
 	netlink/msg.h \
 	netlink/netlink-compat.h \
 	netlink/netlink-kernel.h \
 	netlink/netlink.h \
-	netlink/object-api.h \
 	netlink/object.h \
+	netlink/route/action.h \
+	netlink/route/act/mirred.h \
 	netlink/route/cls/ematch/cmp.h \
 	netlink/route/cls/ematch/meta.h \
 	netlink/route/cls/ematch/nbyte.h \
@@ -42,9 +45,19 @@ nobase_libnlinclude_HEADERS = \
 	netlink/route/cls/u32.h \
 	netlink/route/link/api.h \
 	netlink/route/link/bonding.h \
-	netlink/route/link/info-api.h \
+	netlink/route/link/bridge.h \
+	netlink/route/link/can.h \
 	netlink/route/link/inet.h \
+	netlink/route/link/info-api.h \
+	netlink/route/link/macvlan.h \
 	netlink/route/link/vlan.h \
+	netlink/route/link/vxlan.h \
+	netlink/route/link/veth.h \
+	netlink/route/link/ip6tnl.h \
+	netlink/route/link/ipgre.h \
+	netlink/route/link/ipip.h \
+	netlink/route/link/ipvti.h \
+	netlink/route/link/sit.h \
 	netlink/route/qdisc/cbq.h \
 	netlink/route/qdisc/dsmark.h \
 	netlink/route/qdisc/fifo.h \
@@ -55,6 +68,7 @@ nobase_libnlinclude_HEADERS = \
 	netlink/route/qdisc/sfq.h \
 	netlink/route/qdisc/tbf.h \
 	netlink/route/qdisc/plug.h \
+	netlink/route/qdisc/fq_codel.h \
 	netlink/route/addr.h \
 	netlink/route/class.h \
 	netlink/route/classifier.h \
@@ -68,11 +82,18 @@ nobase_libnlinclude_HEADERS = \
 	netlink/route/rtnl.h \
 	netlink/route/rule.h \
 	netlink/route/tc.h \
-	netlink/route/tc-api.h \
 	netlink/socket.h \
 	netlink/types.h \
 	netlink/utils.h \
-	netlink/version.h
+	netlink/version.h \
+	netlink/cache-api.h \
+	netlink/object-api.h \
+	netlink/route/tc-api.h \
+	netlink/idiag/idiagnl.h \
+	netlink/idiag/meminfo.h \
+	netlink/idiag/msg.h \
+	netlink/idiag/req.h \
+	netlink/idiag/vegasinfo.h
 
 if ENABLE_CLI
 nobase_libnlinclude_HEADERS += \
@@ -80,6 +101,7 @@ nobase_libnlinclude_HEADERS += \
 	netlink/cli/class.h \
 	netlink/cli/cls.h \
 	netlink/cli/ct.h \
+	netlink/cli/exp.h \
 	netlink/cli/link.h \
 	netlink/cli/neigh.h \
 	netlink/cli/qdisc.h \
@@ -97,24 +119,35 @@ noinst_HEADERS = \
 	linux/if_arp.h \
 	linux/if_ether.h \
 	linux/if.h \
+	linux/if_bridge.h \
 	linux/if_link.h \
+	linux/if_tunnel.h \
 	linux/if_vlan.h \
-	linux/inetdevice.h \
+	linux/ip.h \
 	linux/ip_mp_alg.h \
 	linux/ipv6.h \
+	linux/can/netlink.h \
 	linux/neighbour.h \
 	linux/netfilter.h \
+	linux/netfilter/nf_conntrack_common.h \
+	linux/netfilter/nfnetlink_compat.h \
 	linux/netfilter/nfnetlink_conntrack.h \
 	linux/netfilter/nfnetlink.h \
 	linux/netfilter/nfnetlink_log.h \
 	linux/netfilter/nfnetlink_queue.h \
 	linux/netlink.h \
 	linux/pkt_cls.h \
+	linux/tc_act/tc_mirred.h \
 	linux/pkt_sched.h \
 	linux/rtnetlink.h \
 	linux/snmp.h \
 	linux/tc_ematch/tc_em_meta.h \
-	netlink-generic.h \
-	netlink-local.h \
-	netlink-tc.h \
-	netlink-types.h
+	netlink-private/genl.h \
+	netlink-private/netlink.h \
+	netlink-private/socket.h \
+	netlink-private/tc.h \
+	netlink-private/types.h \
+	netlink-private/cache-api.h \
+	netlink-private/object-api.h \
+	netlink-private/route/link/api.h \
+	netlink-private/route/tc-api.h
