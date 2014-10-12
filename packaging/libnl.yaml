@@ -1,6 +1,6 @@
 Name: libnl
 Summary: Convenience library for kernel netlink sockets
-Version: 3.2.9
+Version: 3.2.25
 Release: 1
 Group: System/Libraries
 License: LGPL
